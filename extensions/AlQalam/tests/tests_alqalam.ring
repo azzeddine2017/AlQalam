@@ -2,7 +2,6 @@
 # File: tests_alqalam.ring
 # Description: full Unit Testing for AlQalam (The Pen) Extension
 
-load "alqalam.ring"
 load "ringml.ring" # نحتاجه لاختبار الـ Tensor Bridge
 
 

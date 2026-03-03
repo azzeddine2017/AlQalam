@@ -506,6 +506,88 @@ RING_FUNC(qalam_vector_stream) {
         }
     }
 
+    /*
+    ** Batch Define (The Fast Indexer)
+    ** Defines multiple keys from a list in one go.
+    ** Params: 1. Index, 2. List, 3. Value (default 1), 4. Min Length (default 4), 5. Transform (0=None, 1=Reverse)
+    */
+    RING_FUNC(qalam_index_define_from_list) {
+        QalamIndex *p = (QalamIndex*)RING_API_GETCPOINTER(1, "QalamIndex");
+        if (!p) return;
+
+        if (!RING_API_ISLIST(2)) {
+            RING_API_ERROR("Param 2 must be a List");
+            return;
+        }
+
+        List *pList = RING_API_GETLIST(2);
+        int nSize = ring_list_getsize(pList);
+        double nValue = (RING_API_PARACOUNT >= 3) ? RING_API_GETNUMBER(3) : 1.0;
+        int nMinLen = (RING_API_PARACOUNT >= 4) ? (int)RING_API_GETNUMBER(4) : 0;
+        int nTransform = (RING_API_PARACOUNT >= 5) ? (int)RING_API_GETNUMBER(5) : 0;
+
+        // Pre-allocate map if possible
+        if (nSize > 1000) p->map.reserve(p->map.size() + nSize);
+
+        for(int i = 1; i <= nSize; i++) {
+            if (ring_list_isstring(pList, i)) {
+                char *cStr = ring_list_getstring(pList, i);
+                int nLen = ring_list_getstringsize(pList, i);
+                if (nLen > nMinLen) {
+                    std::string word(cStr, nLen);
+                    if (nTransform == 1) {
+                        std::reverse(word.begin(), word.end());
+                    }
+                    p->map[word] = nValue;
+                }
+            }
+        }
+    }
+
+    /*
+    ** Fast Key Listing
+    ** Returns all keys in the index as a List.
+    */
+    RING_FUNC(qalam_index_keys) {
+        QalamIndex *p = (QalamIndex*)RING_API_GETCPOINTER(1, "QalamIndex");
+        if (!p) return;
+
+        List *pList = RING_API_NEWLIST;
+        std::unordered_map<std::string, double>::iterator it;
+        for (it = p->map.begin(); it != p->map.end(); it++) {
+            ring_list_addstring(pList, it->first.c_str());
+        }
+        RING_API_RETLIST(pList);
+    }
+
+    /*
+    ** Set Intersection (Generalized)
+    ** Returns a List contains keys present in both indices.
+    */
+    RING_FUNC(qalam_index_intersect) {
+        QalamIndex *p1 = (QalamIndex*)RING_API_GETCPOINTER(1, "QalamIndex");
+        QalamIndex *p2 = (QalamIndex*)RING_API_GETCPOINTER(2, "QalamIndex");
+        if (!p1 || !p2) return;
+
+        List *pResult = RING_API_NEWLIST;
+        
+        // Iterate over the smaller map for performance
+        if (p1->map.size() > p2->map.size()) {
+            QalamIndex *temp = p1;
+            p1 = p2;
+            p2 = temp;
+        }
+
+        std::unordered_map<std::string, double>::iterator it;
+        for (it = p1->map.begin(); it != p1->map.end(); it++) {
+            if (p2->map.count(it->first)) {
+                ring_list_addstring(pResult, it->first.c_str());
+            }
+        }
+        RING_API_RETLIST(pResult);
+    }
+
+
     // =============================================================
     // 2. DIRECT I/O (Disk Speed)
     // =============================================================
@@ -692,6 +774,9 @@ RING_FUNC(qalam_vector_stream) {
         RING_API_REGISTER("qalam_index_size", qalam_index_size);
         RING_API_REGISTER("qalam_index_save_binary", qalam_index_save_binary);
         RING_API_REGISTER("qalam_index_load_binary", qalam_index_load_binary);
+        RING_API_REGISTER("qalam_index_define_from_list", qalam_index_define_from_list);
+        RING_API_REGISTER("qalam_index_keys", qalam_index_keys);
+        RING_API_REGISTER("qalam_index_intersect", qalam_index_intersect);
 
         // Formula
         RING_API_REGISTER("qalam_formula_init", qalam_formula_init);

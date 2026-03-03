@@ -55,6 +55,9 @@ AlQalam uses a **Rhetorical Naming Convention** to reflect its role as a creativ
 | | `toString` | **`reveal`** | Show what has been written. |
 | | `clear` | **`wipe`** | Clean the slate for new work. |
 | **Index** | `set` | **`define`** | Define a meaning (ID) for a word. |
+| | `set_batch` | **`defineFromList`** | Load a list of words with optional transformation (Reverse). |
+| | `intersection` | **`intersect`** | Generalized set intersection (Fast C++ Logic). |
+| | `keys` | **`keys`** | Extract all known words as a Ring List. |
 | | `get` | **`recall`** | Recall the meaning from memory (O(1)). |
 
 ---
@@ -123,7 +126,20 @@ oMemory = new QalamIndex()
 oMemory.define("hello", 5)
 oMemory.define("world", 12)
 
-# Instant Recall
+# 1. Batch Teaching (Lightning Fast)
+aWords = ["ring", "logic", "speed"]
+oMemory.defineFromList(aWords, 1, 3, 0) # List, ID, MinLength, Transform(0=None, 1=Reverse)
+
+# 2. Set Intersection (Generalized Logic)
+# Find common items between two indices in C++ speed (O(n))
+oOther = new QalamIndex()
+oOther.define("ring", 1)
+aCommon = oMemory.intersect(oOther) # ["ring"]
+
+# 3. Keys Listing
+aKeys = oMemory.keys()
+
+# 4. Instant Recall
 if oMemory.knows("hello")
     id = oMemory.recall("hello")
 ok

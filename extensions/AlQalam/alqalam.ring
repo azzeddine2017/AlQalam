@@ -430,8 +430,29 @@ class QalamIndex
         Desc: Returns the number of key-value pairs in the index.
         Returns: Number
     */
-    func size() {
-        return qalam_index_size(pPtr)
+    /*
+        Func: defineFromList
+        Desc: Defines multiple keys from a list in one go.
+        Parameters: aList (List), nValue (Number), nMinLen (Number), nTransform (Number)
+    */
+    func defineFromList(aList, nValue, nMinLen, nTransform) {
+        qalam_index_define_from_list(pPtr, aList, nValue, nMinLen, nTransform)
+    }
+
+    /*
+        Func: keys
+        Desc: Returns all keys in the index as a List.
+    */
+    func keys() {
+        return qalam_index_keys(pPtr)
+    }
+
+    /*
+        Func: intersect
+        Desc: Returns keys present in both this and another index.
+    */
+    func intersect(oOther) {
+        return qalam_index_intersect(pPtr, oOther.pPtr)
     }
 
     /*
