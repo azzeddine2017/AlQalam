@@ -32,7 +32,7 @@ AlQalam is designed to obliterate overhead. By leveraging C++ `std::vector`, `st
 
 | Operation | Ring Native | AlQalam | **Speedup** |
 | :--- | :--- | :--- | :--- |
-| **Vector Math** | 0.28s | < 0.0001s | **~2750x Faster** |
+| **Vector Math** | 0.28s | < 0.0001s | **~271x Faster** |
 | **Dictionary Search** | 2.41s | 0.03s | **~92x Faster** |
 | **Batch String Build** | 0.02s | < 0.001s | **~19x Faster** |
 | **Formula Execution** | N/A | **Nanoseconds** | **Instant** |
