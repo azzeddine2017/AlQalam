@@ -8,23 +8,53 @@ extern "C" {
 
 #include <vector>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <algorithm>
 #include <cstring>
 #include <cstdio>
 #include <cmath>
 #include <chrono> 
+#include <cctype>
 #include "tiny_math.hpp"
 
 #ifdef _OPENMP
 #include <omp.h>
 #endif
 
+
 // --- Structures ---
 struct QalamTimer { std::chrono::high_resolution_clock::time_point start_time;};
 struct QalamVector { std::vector<double> data; size_t nReservedSize = 0; };
 struct QalamInk    { std::string text; };
-struct QalamIndex  { std::unordered_map<std::string, double> map;};
+
+/* ====================================================================
+** Upgrade 5: Transparent Hash/Comparator for Heterogeneous Lookup
+** ====================================================================
+** BEFORE: Every map.find() / map.count() call with const char* created
+**         a temporary std::string (heap alloc + copy) just for the lookup.
+**         In a tokenizer processing millions of words, this sums up to
+**         millions of unnecessary allocations.
+**
+** AFTER:  The transparent hash (with is_transparent tag) allows the
+**         unordered_map to accept std::string_view directly in find/count,
+**         computing the hash WITHOUT constructing a std::string.
+**         On Broadwell i3, this eliminates ~1 cache miss per lookup
+**         (the miss that would've been caused by the heap allocation).
+** ==================================================================== */
+struct StringHash {
+    using is_transparent = void;  /* Enables heterogeneous lookup */
+    
+    size_t operator()(const std::string& s)    const { return std::hash<std::string_view>{}(s); }
+    size_t operator()(std::string_view sv)      const { return std::hash<std::string_view>{}(sv); }
+    size_t operator()(const char* cs)           const { return std::hash<std::string_view>{}(cs); }
+};
+
+/* QalamIndex now uses transparent hash + std::equal_to<> (C++14)
+** std::equal_to<> (void specialization) compares any compatible types
+** without requiring conversion to std::string. */
+struct QalamIndex  { std::unordered_map<std::string, double, StringHash, std::equal_to<>> map; };
+
 struct QalamFormulaWrapper { std::vector<Instruction> program; };
 
 // --- Destructors ---
@@ -33,6 +63,52 @@ void qink_free(void *pState, void *pPointer)    { delete (QalamInk *)pPointer; }
 void qindex_free(void *pState, void *pPointer)  { delete (QalamIndex *)pPointer; }
 void qtimer_free(void *pState, void *pPointer) { delete (QalamTimer *)pPointer; }
 void qformula_free(void *pState, void *pPointer) { delete (QalamFormulaWrapper *)pPointer; }
+
+// --- PDF Extraction Helper ---
+// Strictly use pdftotext.exe for high-quality extraction for Jibrail project.
+std::string extract_pdf_basic(const char* filename) {
+    // Get the directory of the current DLL to find pdftotext.exe nearby
+    char dllPath[MAX_PATH];
+    GetModuleFileNameA(GetModuleHandleA("alqalam.dll"), dllPath, MAX_PATH);
+    std::string exePath = dllPath;
+    size_t lastBackslash = exePath.find_last_of("\\/");
+    if (lastBackslash != std::string::npos) {
+        exePath = exePath.substr(0, lastBackslash + 1) + "pdftotext.exe";
+    } else {
+        exePath = "pdftotext.exe"; // Fallback to PATH
+    }
+
+    std::string cmd = "\"\"" + exePath + "\" -enc UTF-8 -nopgbrk \"";
+    cmd += filename;
+    cmd += "\" -\"";
+
+    std::string result;
+    FILE* pipe = _popen(cmd.c_str(), "r");
+    if (pipe) {
+        char pipe_buffer[4096];
+        while (fgets(pipe_buffer, sizeof(pipe_buffer), pipe) != NULL) {
+            result += pipe_buffer;
+        }
+        _pclose(pipe);
+    }
+
+    // Whitespace normalization for Jibrail Vector DB
+    std::string cleaned;
+    bool lastWasSpace = true;
+    for(size_t k = 0; k < result.length(); k++) {
+        unsigned char c = (unsigned char)result[k];
+        if (c <= 32) {
+            if (!lastWasSpace) { 
+                cleaned += (c == '\n' ? '\n' : ' '); 
+                lastWasSpace = true; 
+            }
+        } else {
+            cleaned += (char)c;
+            lastWasSpace = false;
+        }
+    }
+    return cleaned;
+}
 
 
 extern "C" {
@@ -73,7 +149,7 @@ extern "C" {
         if (RING_API_PARACOUNT == 1) {
             int n = (int)RING_API_GETNUMBER(1);
             if(n > 0) {
-                p->data.reserve(n); 
+                p->data.resize(n, 0.0); 
                 p->nReservedSize = n;
             }
         }
@@ -199,6 +275,42 @@ extern "C" {
         20: SUM_RANGE (start, end)
         30: FIND_FIRST_GT (val) -> returns index
     */
+    RING_FUNC(qalam_vector_copy) {
+        if (RING_API_PARACOUNT != 2) return;
+        QalamVector *pSrc = (QalamVector*)RING_API_GETCPOINTER(1, "QalamVector");
+        QalamVector *pDst = (QalamVector*)RING_API_GETCPOINTER(2, "QalamVector");
+        if (!pSrc || !pDst) return;
+        
+        size_t n = pSrc->data.size();
+        pDst->data.resize(n);
+        std::copy(pSrc->data.begin(), pSrc->data.end(), pDst->data.begin());
+    }
+
+    /*
+    ** Function: qalam_vector_copy_segment
+    ** Description: Rapid memory transfer within a single processor strike (Memcpy Zero-Copy)
+    ** Params: 1. Target Vector, 2. Source Vector, 3. Target Offset
+    */
+    RING_FUNC(qalam_vector_copy_segment) {
+        if (RING_API_PARACOUNT != 3) {
+            RING_API_ERROR("copySegment requires 3 params: Target, Source, Offset");
+            return;
+        }
+        QalamVector *pDst = (QalamVector*)RING_API_GETCPOINTER(1, "QalamVector");
+        QalamVector *pSrc = (QalamVector*)RING_API_GETCPOINTER(2, "QalamVector");
+        int nOffset = (int)RING_API_GETNUMBER(3);
+
+        if (pDst && pSrc && nOffset >= 0) {
+            size_t nSrcSize = pSrc->data.size();
+            // Ensure target has enough capacity
+            if (nOffset + nSrcSize > pDst->data.size()) {
+                pDst->data.resize(nOffset + nSrcSize, 0.0);
+            }
+            // Rapid Memcpy (Zero-Copy)
+            memcpy(pDst->data.data() + nOffset, pSrc->data.data(), nSrcSize * sizeof(double));
+        }
+    }
+
     RING_FUNC(qalam_vector_process) {
         QalamVector *p = (QalamVector*)RING_API_GETCPOINTER(1, "QalamVector");
         if (!p) return;
@@ -259,6 +371,54 @@ extern "C" {
                 }
                 RING_API_RETNUMBER(0.0);
                 return;
+            // --- Advanced Matching Operations (Quantum Vector) ---
+            case 40: // DOT_PRODUCT with Raw Double Array Pointer
+            {
+                double* targetPtr = (double*)(size_t)p1;
+                if (!targetPtr) { RING_API_RETNUMBER(0.0); return; }
+                double dot = 0.0;
+                for (i = 0; i < n; i++) dot += ptr[i] * targetPtr[i];
+                RING_API_RETNUMBER(dot);
+                return;
+            }
+            case 41: // L2_NORM
+            {
+                double norm = 0.0;
+                #pragma omp parallel for reduction(+:norm)
+                for (i = 0; i < n; i++) norm += ptr[i] * ptr[i];
+                RING_API_RETNUMBER(sqrt(norm + 1e-12));
+                return;
+            }
+            case 42: // ADD (Vector += p1_Pointer)
+            {
+                double* targetPtr = (double*)(size_t)p1;
+                if (!targetPtr) return;
+                #pragma omp parallel for
+                for (i = 0; i < n; i++) ptr[i] += targetPtr[i];
+                return;
+            }
+            case 43: // IN-PLACE NORMALISE
+            {
+                double norm = 0.0;
+                #pragma omp parallel for reduction(+:norm)
+                for (i = 0; i < n; i++) norm += ptr[i] * ptr[i];
+                norm = sqrt(norm + 1e-12);
+                #pragma omp parallel for
+                for (i = 0; i < n; i++) ptr[i] /= norm;
+                return;
+            }
+            case 44: // IN-PLACE ROTATE (shift=p1)
+            {
+                int shift = (int)p1;
+                if (n == 0 || shift == 0) return;
+                shift = (shift % (int)n + (int)n) % (int)n; // Handling negative shifts
+                std::vector<double> temp(n);
+                std::copy(ptr, ptr + n, temp.begin());
+                for (i = 0; i < n; i++) {
+                    ptr[i] = temp[(i + shift) % n];
+                }
+                return;
+            }
         }
     }
 
@@ -355,6 +515,110 @@ RING_FUNC(qalam_vector_stream) {
     RING_API_RETNUMBER((double)nCount);
 }
 
+    // =============================================================
+    // 3. MATRIX-FREE CONJUGATE GRADIENT (TDVP / SR) 
+    // solves S * x = F efficiently for massive NQS architectures
+    // S = (O^T * O)/B + reg * I
+    // =============================================================
+    
+    // Internal Helper: Matrix-Free Vector Product (S * v)
+    static void apply_s_matrix(const double* O, const double* v, double* out, int B, int N, double reg) {
+        // temp array of size B
+        std::vector<double> temp(B, 0.0);
+        
+        // 1. temp = O * v
+        #pragma omp parallel for
+        for (int i = 0; i < B; i++) {
+            double sum = 0;
+            for (int j = 0; j < N; j++) {
+                sum += O[i * N + j] * v[j];
+            }
+            temp[i] = sum;
+        }
+
+        // 2. out = O^T * temp / B + reg * v
+        double scale = 1.0 / B;
+        #pragma omp parallel for
+        for (int j = 0; j < N; j++) {
+            double sum = 0;
+            for (int i = 0; i < B; i++) {
+                sum += O[i * N + j] * temp[i];
+            }
+            out[j] = sum * scale + reg * v[j];
+        }
+    }
+    /*
+    ** Solve S * x = F using Conjugate Gradient
+    ** O: Jacobian matrix (B x N)
+    ** F: Force vector (N)
+    ** x: Result vector (N)
+    ** B: Batch size
+    ** N: Number of parameters
+    ** max_iter: Max CG iterations
+    ** reg: Regularization parameter
+    ** tol: Tolerance for convergence
+    */
+    RING_FUNC(qalam_solver_cg_tdvp) {
+        if (RING_API_PARACOUNT < 8) {
+            RING_API_ERROR("qalam_solver_cg_tdvp requires 8 params");
+            return;
+        }
+        
+        double* O = (double*)(size_t)RING_API_GETNUMBER(1); // Jacobian matrix (B x N)
+        double* F = (double*)(size_t)RING_API_GETNUMBER(2); // Force vector (N)
+        double* x = (double*)(size_t)RING_API_GETNUMBER(3); // Result vector (N)
+        int B = (int)RING_API_GETNUMBER(4);                 // Batch size
+        int N = (int)RING_API_GETNUMBER(5);                 // Number of parameters
+        int max_iter = (int)RING_API_GETNUMBER(6);          // Max CG iterations
+        double tol = RING_API_GETNUMBER(7);                 // Tolerance
+        double reg = RING_API_GETNUMBER(8);                 // Regularization (Diagonal shift)
+
+        std::vector<double> r(N);
+        std::vector<double> p(N);
+        std::vector<double> Ap(N);
+        
+        // Initial state x = 0
+        memset(x, 0, N * sizeof(double));
+        
+        // r = F - S*x = F (since x = 0)
+        memcpy(r.data(), F, N * sizeof(double));
+        memcpy(p.data(), F, N * sizeof(double));
+
+        double rsold = 0;
+        #pragma omp parallel for reduction(+:rsold)
+        for (int i = 0; i < N; i++) rsold += r[i] * r[i];
+
+        int iter = 0;
+        for (iter = 0; iter < max_iter; iter++) {
+            apply_s_matrix(O, p.data(), Ap.data(), B, N, reg);
+
+            double pAp = 0;
+            #pragma omp parallel for reduction(+:pAp)
+            for (int i = 0; i < N; i++) pAp += p[i] * Ap[i];
+
+            double alpha = pAp > 1e-15 ? rsold / pAp : 0.0;
+
+            double rsnew = 0;
+            #pragma omp parallel for reduction(+:rsnew)
+            for (int i = 0; i < N; i++) {
+                x[i] += alpha * p[i];
+                r[i] -= alpha * Ap[i];
+                rsnew += r[i] * r[i];
+            }
+
+            if (sqrt(rsnew) < tol) break;
+
+            double p_scale = rsnew / rsold;
+            #pragma omp parallel for
+            for (int i = 0; i < N; i++) {
+                p[i] = r[i] + p_scale * p[i];
+            }
+            rsold = rsnew;
+        }
+
+        RING_API_RETNUMBER((double)iter);
+    }
+
     // ==========================================
     // 2. QalamInk Controls (String Builder)
     // ==========================================
@@ -408,7 +672,7 @@ RING_FUNC(qalam_vector_stream) {
     }
 
     /*
-    ** Batch Append (The Ring Killer)
+    ** Batch Append 
     ** Appends a list of strings in one go inside C++.
     */
     RING_FUNC(qalam_ink_append_batch) {
@@ -451,18 +715,23 @@ RING_FUNC(qalam_vector_stream) {
         RING_API_RETMANAGEDCPOINTER(p, "QalamIndex", qindex_free);
     }
     
-    // Set: index.set(key, val)
+    /* Upgrade 5: Set uses operator[] which still needs std::string for insertion.
+    ** This is unavoidable (insertion requires owning the key).
+    ** But lookups below are now zero-alloc via string_view. */
     RING_FUNC(qalam_index_set) {
         QalamIndex *p = (QalamIndex*)RING_API_GETCPOINTER(1, "QalamIndex");
         if(p) p->map[std::string(RING_API_GETSTRING(2))] = RING_API_GETNUMBER(3);
     }
     
-    // Get: val = index.get(key)
+    /* Upgrade 5: find() now takes string_view directly (zero-alloc lookup).
+    ** The transparent StringHash computes hash on the view, and std::equal_to<>
+    ** compares std::string == std::string_view without conversion. */
     RING_FUNC(qalam_index_get) {
         QalamIndex *p = (QalamIndex*)RING_API_GETCPOINTER(1, "QalamIndex");
         if(!p) { RING_API_RETNUMBER(0.0); return; }
         
-        auto it = p->map.find(std::string(RING_API_GETSTRING(2)));
+        std::string_view key(RING_API_GETSTRING(2));
+        auto it = p->map.find(key);
         RING_API_RETNUMBER(it != p->map.end() ? it->second : 0.0);
     }
 
@@ -476,11 +745,9 @@ RING_FUNC(qalam_vector_stream) {
     
     double nTargetID = RING_API_GETNUMBER(2);
     
-    // Reverse search using Iterator to avoid C++17 error
-    std::unordered_map<std::string, double>::iterator it;
-        for (it = p->map.begin(); it != p->map.end(); it++) {
+    // Reverse search using auto iterator
+    for (auto it = p->map.begin(); it != p->map.end(); ++it) {
             if (it->second == nTargetID) {
-                // Using it->first.c_str() to get the text
                 RING_API_RETSTRING(it->first.c_str());
                 return;
             }
@@ -495,11 +762,13 @@ RING_FUNC(qalam_vector_stream) {
         RING_API_RETNUMBER(p ? (double)p->map.size() : 0.0);
     }
 
-    // Exists: Check if key is present
+    /* Upgrade 5: count() now takes string_view (zero-alloc existence check).
+    ** No std::string construction needed — string_view wraps the
+    ** existing const char* from RING_API_GETSTRING in-place. */
     RING_FUNC(qalam_index_exists) {
         QalamIndex *p = (QalamIndex*)RING_API_GETCPOINTER(1, "QalamIndex");
-        const char* key = RING_API_GETSTRING(2);
-        if (p && p->map.count(std::string(key))) {
+        std::string_view key(RING_API_GETSTRING(2));
+        if (p && p->map.count(key)) {
             RING_API_RETNUMBER(1.0);
         } else {
             RING_API_RETNUMBER(0.0);
@@ -553,8 +822,7 @@ RING_FUNC(qalam_vector_stream) {
         if (!p) return;
 
         List *pList = RING_API_NEWLIST;
-        std::unordered_map<std::string, double>::iterator it;
-        for (it = p->map.begin(); it != p->map.end(); it++) {
+        for (auto it = p->map.begin(); it != p->map.end(); ++it) {
             ring_list_addstring(pList, it->first.c_str());
         }
         RING_API_RETLIST(pList);
@@ -562,7 +830,9 @@ RING_FUNC(qalam_vector_stream) {
 
     /*
     ** Set Intersection (Generalized)
-    ** Returns a List contains keys present in both indices.
+    ** Upgrade 5: Uses count() with string_view from iterator->first.
+    ** Since the key from map iteration is already std::string, and our
+    ** transparent hash accepts it natively, no extra alloc occurs.
     */
     RING_FUNC(qalam_index_intersect) {
         QalamIndex *p1 = (QalamIndex*)RING_API_GETCPOINTER(1, "QalamIndex");
@@ -571,16 +841,16 @@ RING_FUNC(qalam_vector_stream) {
 
         List *pResult = RING_API_NEWLIST;
         
-        // Iterate over the smaller map for performance
+        /* Iterate over the smaller map for performance */
         if (p1->map.size() > p2->map.size()) {
             QalamIndex *temp = p1;
             p1 = p2;
             p2 = temp;
         }
 
-        std::unordered_map<std::string, double>::iterator it;
-        for (it = p1->map.begin(); it != p1->map.end(); it++) {
-            if (p2->map.count(it->first)) {
+        for (auto it = p1->map.begin(); it != p1->map.end(); ++it) {
+            /* string_view lookup in the other map — zero alloc */
+            if (p2->map.count(std::string_view(it->first))) {
                 ring_list_addstring(pResult, it->first.c_str());
             }
         }
@@ -604,7 +874,7 @@ RING_FUNC(qalam_vector_stream) {
         fwrite(&nCount, sizeof(size_t), 1, fp);
 
         // [token, id]
-        for (std::unordered_map<std::string, double>::const_iterator it = p->map.begin(); it != p->map.end(); ++it) {
+        for (auto it = p->map.begin(); it != p->map.end(); ++it) {
             const std::string& token = it->first;
             double id = it->second;
 
@@ -729,7 +999,20 @@ RING_FUNC(qalam_vector_stream) {
     }
 
     // ==========================================
-    // 4. QalamLibInit (Init)
+    // 5. PDF Extraction (Quick & Light)
+    // ==========================================
+    RING_FUNC(qalam_pdf_extract_text) {
+        if (RING_API_PARACOUNT != 1 || !RING_API_ISSTRING(1)) {
+            RING_API_ERROR("extract_pdf_text requires 1 string parameter (file path)");
+            return;
+        }
+        const char* cFile = RING_API_GETSTRING(1);
+        std::string text = extract_pdf_basic(cFile);
+        RING_API_RETSTRING(text.c_str());
+    }
+
+    // ==========================================
+    // 6. QalamLibInit (Init)
     // ==========================================
     
     RING_LIBINIT {
@@ -751,12 +1034,14 @@ RING_FUNC(qalam_vector_stream) {
         RING_API_REGISTER("qalam_vector_resize", qalam_vector_resize);
         RING_API_REGISTER("qalam_vector_load_from_ptr", qalam_vector_load_from_ptr);
         RING_API_REGISTER("qalam_vector_append_from_ptr", qalam_vector_append_from_ptr);
+        RING_API_REGISTER("qalam_vector_copy_segment", qalam_vector_copy_segment);
         RING_API_REGISTER("qalam_vector_stream", qalam_vector_stream);
 
         RING_API_REGISTER("qalam_vector_process", qalam_vector_process);
+        RING_API_REGISTER("qalam_vector_copy", qalam_vector_copy);
         RING_API_REGISTER("qalam_vector_save_binary", qalam_vector_save_binary);
         RING_API_REGISTER("qalam_vector_load_binary", qalam_vector_load_binary);
-
+       
         // Ink
         RING_API_REGISTER("qalam_ink_init", qalam_ink_init);
         RING_API_REGISTER("qalam_ink_append", qalam_ink_append);
@@ -781,5 +1066,10 @@ RING_FUNC(qalam_vector_stream) {
         // Formula
         RING_API_REGISTER("qalam_formula_init", qalam_formula_init);
         RING_API_REGISTER("qalam_formula_apply", qalam_formula_apply);
+        
+        // PDF
+        RING_API_REGISTER("qalam_pdf_extract_text", qalam_pdf_extract_text);
+
+        RING_API_REGISTER("qalam_solver_cg_tdvp", qalam_solver_cg_tdvp);
     }
 }

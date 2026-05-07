@@ -5,11 +5,11 @@ aPackageInfo = [
 	:developer = "Azzeddine Remmal",
 	:email = "azzeddine.remmal@gmail.com",
 	:license = "MIT License",
-	:version = "1.0.1",
+	:version = "1.0.2",
 	:ringversion = "1.26",
 	:versions = 	[
 		[
-			:version = "1.0.1",
+			:version = "1.0.2",
 			:branch = "master"
 		]
 	],
@@ -28,6 +28,7 @@ aPackageInfo = [
         "bin/alqalam.dll",
 		"bin/alqalam.exp",
 		"bin/alqalam.lib",
+		"bin/pdftotext.exe",
 		"bin/load/alqalam.ring",
 		"extensions/AlQalam/alqalam.cpp",
 		"extensions/AlQalam/alqalam.ring",
@@ -36,6 +37,8 @@ aPackageInfo = [
 		"extensions/AlQalam/tests/tests_alqalam.ring",
 		"extensions/AlQalam/tests/test_alqalam_formula.ring",
 		"extensions/AlQalam/tests/test_alqalam_speed.ring",
+		"extensions/AlQalam/tests/size_test.ring",
+		"extensions/AlQalam/tests/test_alqalam_pdfToTxt.ring"
 		"extensions/AlQalam/tiny_math.hpp"
 	],
 	:windowsfiles = 	[

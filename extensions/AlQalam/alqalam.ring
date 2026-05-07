@@ -18,44 +18,98 @@ ok
     Parameters: nNs (Number) - Time duration in nanoseconds
     Returns: String
 */
-func formatNanoTime nNs
-    
-    # 1. Nanoseconds 
-    if nNs < 1000 return "" + floor(nNs) + " ns" ok
-    
-    # 2. Microseconds 
-    if nNs < 1000000 val = nNs / 1000.0 return "" + formatDecimal(val) + " us" ok
-    
-    # 3. Milliseconds 
-    if nNs < 1000000000 val = nNs / 1000000.0 return "" + formatDecimal(val) + " ms"ok
-    
-    # 4. Seconds & Hours 
-    # Convert nanoseconds to seconds
-    nSec = floor(nNs / 1000000000)
-    
+/*func formatNanoTime nNs
+
+    # 1. Nanoseconds (أقل من ميكروثانية)
+    if nNs < 1000
+        return "" + floor(nNs) + " ns"
+    ok
+
+    # 2. Microseconds + ns (أقل من ميلي ثانية)
+    if nNs < 1000000
+        nUs  = floor(nNs / 1000)
+        nNsR = floor(nNs % 1000)
+        cStr = "" + nUs + " µs"
+        if nNsR > 0 cStr += " " + nNsR + " ns" ok
+        return cStr
+    ok
+
+    # 3. Milliseconds + µs + ns (أقل من ثانية)
+    if nNs < 1000000000
+        nMs  = floor(nNs / 1000000)
+        nUs  = floor((nNs % 1000000) / 1000)
+        nNsR = floor(nNs % 1000)
+        cStr = "" + nMs + " ms"
+        if nUs  > 0 cStr += " " + nUs  + " µs" ok
+        if nNsR > 0 cStr += " " + nNsR + " ns" ok
+        return cStr
+    ok
+
+    # 4. Seconds + ms + µs + ns
+    nMs  = floor((nNs % 1000000000) / 1000000)
+    nUs  = floor((nNs % 1000000)    / 1000)
+    nNsR = floor( nNs % 1000)
+    nSec = floor( nNs / 1000000000)
+
     nH = floor(nSec / 3600)
     nM = floor((nSec % 3600) / 60)
     nS = nSec % 60
-    
+
     cStr = ""
     if nH > 0 cStr += "" + nH + "h " ok
     if nM > 0 cStr += "" + nM + "m " ok
-    
-    # Add seconds
     cStr += "" + nS + "s"
+    if nMs  > 0 cStr += " " + nMs  + " ms" ok
+    if nUs  > 0 cStr += " " + nUs  + " µs" ok
+    if nNsR > 0 cStr += " " + nNsR + " ns" ok
+
+    return cStr*/
+
+func formatNanoTime nNs
+    # --- العرض الاحترافي للوقت في مجمع القلم ---
     
-    return cStr
+    # 1. الميكرو-ثواني (أقل من 1 ملي) -> الدقة العالية
+    if nNs < 1000000
+        nMicro = nNs / 1000.0
+        return formatDecimal(nMicro, 3) + " µs"
+    ok
 
-/*
-    Function: formatDecimal
-    Description: Formats a decimal number to a string with two decimal places.
-    Parameters: nNum (Number) - The number to format
-    Returns: String
-*/
-func formatDecimal nNum
-    return floor(nNum * 100) / 100.0
+    # 2. الميلي-ثانية (أقل من 1 ثانية)
+    if nNs < 1000000000
+        nMs = nNs / 1000000.0
+        return formatDecimal(nMs, 3) + " ms"
+    ok
 
+    # 3. الثواني (أقل من دقيقة) -> عرض رشيق
+    if nNs < 60000000000
+        nSec = nNs / 1000000000.0
+        return formatDecimal(nSec, 3) + " s"
+    ok
 
+    # 4. الوقت الطويل (ساعات، دقائق، ثواني) -> تنسيق الساعة الرقمية الفاخر
+    nTotalSec = floor(nNs / 1000000000)
+    nH = floor(nTotalSec / 3600)
+    nM = floor((nTotalSec % 3600) / 60)
+    nS = nTotalSec % 60
+
+    if nH > 0
+        return "" + nH + ":" + right("0"+nM, 2) + ":" + right("0"+nS, 2) + " (h:m:s)"
+    else
+        return "" + nM + "m " + right("0"+nS, 2) + "s"
+    ok
+
+/*func formatDecimal nVal, nPlaces
+    cStr = "" + nVal
+    nPos = substr(cStr, ".")
+    if nPos = 0 return cStr + "." + str(nPlaces, "0") ok
+    return left(cStr, nPos + nPlaces)*/
+
+func formatDecimal nVal, nDigits
+    nFactor = pow(10, nDigits)
+    nRounded = floor(nVal * nFactor + 0.5) / nFactor
+    nInt = floor(nRounded)
+    nFrac = floor((nRounded - nInt) * nFactor + 0.5)
+    return "" + nInt + "." + right("000" + nFrac, nDigits)
 
 /*
     Class: QalamChronos
@@ -107,6 +161,8 @@ class QalamVector
     MODE_SCALE_ADD  = 12
     MODE_SUM_RANGE  = 20
     MODE_FIND_GT    = 30
+    MODE_DOT_PRODUCT= 40
+    MODE_NORM       = 41
 
     /*
         Function: init
@@ -153,6 +209,52 @@ class QalamVector
         # otherwise this acts as a placeholder for architectural consistency.
         qalam_vector_set(pPtr, nIndex, nValue) 
     }
+    /*
+        Function: copy
+        Description: Copies the vector.
+        Parameters: None
+        Returns: QalamVector
+    */
+    func copy()
+        oNew = new QalamVector(size())
+        qalam_vector_copy(pPtr, oNew.pPtr) 
+        return oNew
+    
+    /*
+        Function: rotate
+        Description: Rotates the vector.
+        Parameters: nShift (Number)
+        Returns: QalamVector
+    */
+    func rotate(nShift)
+        oNew = copy()
+        oNew.process(44, nShift, 0, 0)
+        return oNew
+
+    /*
+        Function: copySegment
+        Description: Rapid memory transfer within a single processor strike (Memcpy Zero-Copy)
+        Parameters: oSource (QalamVector), nOffset (Number)
+    */
+    func copySegment(oSource, nOffset) {
+        qalam_vector_copy_segment(pPtr, oSource.pPtr, nOffset)
+    }
+
+    /*
+        Function: add
+        Description: Adds another vector to this vector.
+        Parameters: oOther (QalamVector)
+    */
+    func add(oOther)
+        process(42, oOther.getRawPointer(), 0, 0)
+
+    /*
+        Function: normalise
+        Description: Normalizes the vector.
+        Parameters: None
+    */
+    func normalise()
+        process(43, 0, 0, 0)
 
     /*
         Function: size
@@ -277,36 +379,50 @@ class QalamVector
         Func: process
         Desc: The Super Loop. Executes C++ logic on the vector.
     */
-    func process nMode, p1, p2, p3
+    func process(nMode, p1, p2, p3){
         # Flexible call allowing optional args (default 0)
         return qalam_vector_process(pPtr, nMode, p1, p2, p3)
-
+    }
     # --- High-Level Eloquent Wrappers ---
 
-    func clip nMin, nMax
+    func clip(nMin, nMax){
         process(MODE_CLIP, nMin, nMax, 0)
+    }
     
-    func threshold nLimit, nReplacement
+    func threshold(nLimit, nReplacement){
         process(MODE_THRESHOLD, nLimit, nReplacement, 0)
-
-    func findFirstGreater nVal
+    }
+    
+    func findFirstGreater(nVal){
         return process(MODE_FIND_GT, nVal, 0, 0)
+    }
+
+    func dotProduct(oOtherVector){
+        return process(MODE_DOT_PRODUCT, oOtherVector.getRawPointer(), 0, 0)
+    }
+    
+    func norm(){
+        return process(MODE_NORM, 0, 0, 0)
+    }
 
     # --- Disk I/O ---
 
-    func saveBinary cPath
+    func saveBinary(cPath){
         qalam_vector_save_binary(pPtr, cPath)
+    }
 
-    func loadBinary cPath
+    func loadBinary(cPath){
         qalam_vector_load_binary(pPtr, cPath)
+    }
 
      /*
         Func: transform
         Desc: Applies a formula string directly.
     */
-    func transform cExpr
+    func transform(cExpr){
         oF = new QalamFormula(cExpr)
         oF.applyTo(self)
+    }
 
     /*
         Func: stream
@@ -430,6 +546,10 @@ class QalamIndex
         Desc: Returns the number of key-value pairs in the index.
         Returns: Number
     */
+    func size(){
+        return qalam_index_size(pPtr)
+    }
+    
     /*
         Func: defineFromList
         Desc: Defines multiple keys from a list in one go.
@@ -463,6 +583,7 @@ class QalamIndex
     func saveBinary(cFilePath) {
         qalam_index_save_binary(pPtr, cFilePath)
     }
+    
 
     /*
         Func: loadBinary
@@ -480,9 +601,31 @@ class QalamIndex
 class QalamFormula
     pPtr = NULL
     
-    func init cExpr
+    func init(cExpr){
         pPtr = qalam_formula_init(cExpr)
         return self
+    }
         
-    func applyTo oVector
+    func applyTo(oVector){
         qalam_formula_apply(pPtr, oVector.pPtr)
+    }
+
+/*
+    Class: QalamReader
+    Description: Knowledge Extraction from Documents.
+*/
+class QalamReader
+
+    func extractPDFText(cPath){
+        return qalam_pdf_extract_text(cPath)
+    }
+
+/*
+    Class: QalamSolver
+    Description: Advanced Linear Solvers (CG, etc.)
+*/
+class QalamSolver
+
+    func solveCGTDVP(pO, pF, pX, nB, nN, nMaxIter, nTol, nReg){
+        return qalam_solver_cg_tdvp(pO, pF, pX, nB, nN, nMaxIter, nTol, nReg)
+    }
