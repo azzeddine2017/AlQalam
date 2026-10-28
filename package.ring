@@ -5,11 +5,11 @@ aPackageInfo = [
 	:developer = "Azzeddine Remmal",
 	:email = "azzeddine.remmal@gmail.com",
 	:license = "MIT License",
-	:version = "1.0.2",
+	:version = "1.0.3",
 	:ringversion = "1.26",
 	:versions = 	[
 		[
-			:version = "1.0.2",
+			:version = "1.0.3",
 			:branch = "master"
 		]
 	],
@@ -33,6 +33,7 @@ aPackageInfo = [
 		"extensions/AlQalam/alqalam.cpp",
 		"extensions/AlQalam/alqalam.ring",
 		"extensions/AlQalam/buildvc.bat",
+		"extensions/AlQalam/buildgcc.sh",
 		"extensions/AlQalam/README.md",
 		"extensions/AlQalam/tests/tests_alqalam.ring",
 		"extensions/AlQalam/tests/test_alqalam_formula.ring",
