@@ -39,7 +39,7 @@ aPackageInfo = [
 		"extensions/AlQalam/tests/test_alqalam_formula.ring",
 		"extensions/AlQalam/tests/test_alqalam_speed.ring",
 		"extensions/AlQalam/tests/size_test.ring",
-		"extensions/AlQalam/tests/test_alqalam_pdfToTxt.ring"
+		"extensions/AlQalam/tests/test_alqalam_pdfToTxt.ring",
 		"extensions/AlQalam/tiny_math.hpp"
 	],
 	:windowsfiles = 	[
